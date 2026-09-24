@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Cube Runner - Jump Edition</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #111;
+            user-select: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        /* UI Overlay Styling */
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.75);
+            color: red;
+            z-index: 10;
+            transition: opacity 0.3s ease;
+        }
+        .hidden {
+            display: none !important;
+        }
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+        p {
+            font-size: 1.2rem;
+            margin-bottom: 25px;
+            color: #ccc;
+        }
+        button {
+            padding: 12px 30px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,123,255,0.4);
+            transition: transform 0.1s, background 0.2s;
+        }
+        button:hover {
+            background: #0056b3;
+            transform: scale(1.05);
+        }
+        /* HUD styling */
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 1.5rem;
+            font-weight: bold;
+            z-index: 5;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="hud">Level: <span id="hud-level">1</span></div>
+
+    <div id="start-screen" class="ui-layer">
+        <h1>3D Cube Runner</h1>
+        <p>Arrows/AD to dodge, Space/Up Arrow to JUMP.</p>
+        <button onclick="startGame()">Start Game</button>
+    </div>
+
+    <div id="complete-screen" class="ui-layer hidden">
+        <h1 id="complete-title">Level Complete!</h1>
+        <p id="complete-desc">Get ready for the next challenge.</p>
+        <button id="next-btn" onclick="nextLevel()">Next Level</button>
+    </div>
+
+    <div id="gameover-screen" class="ui-layer hidden">
+        <h1 style="color: #ff4d4d;">Game Over</h1>
+        <p>You crashed into an obstacle!</p>
+        <button onclick="restartLevel()">Try Again</button>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script>
+        // --- Game Configuration & State ---
+        let currentLevel = 1;
+        const maxLevels = 4;
+        let gameState = 'START'; 
+        
+        // Fixed Level Parameters (Added missing comma)
+        const levelSettings = {
+            1: { trackLength: 200, speed: 0.5, obstacleCount: 15, name: "Beginner's Straight" },
+            2: { trackLength: 300, speed: 0.7, obstacleCount: 30, name: "Obstacle Dash" },
+            3: { trackLength: 400, speed: 0.9, obstacleCount: 30, name: "The Grid Gauntlet" },
+            4: { trackLength: 500, speed: 1.1, obstacleCount: 50, name: "The End Game" }
+        };
+
+        // --- Three.js Essentials & Jump Physics ---
+        let scene, camera, renderer;
+        let player, track, finishLine;
+        let obstacles = [];
+        let keys = { Left: false, Right: false };
+        let velocityY = 0;
+        let isJumping = false;
+        const gravity = 0.03;
+        const jumpStrength = 0.4;
+
+        // --- Initialization ---
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+            scene.fog = new THREE.FogExp2(0x1a1a2e, 0.015);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 20, 10);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('keydown', (e) => handleInput(e, true));
+            window.addEventListener('keyup', (e) => handleInput(e, false));
+        }
+
+        // --- Level Building ---
+        function setupLevel(levelNum) {
+            // Clear existing gameplay items properly
+            obstacles.forEach(obs => scene.remove(obs));
+            obstacles = [];
+            if (player) scene.remove(player);
+            if (track) scene.remove(track);
+            if (finishLine) scene.remove(finishLine);
+
+            const settings = levelSettings[levelNum];
+            document.getElementById('hud-level').innerText = `${levelNum} - ${settings.name}`;
+
+            // 1. Restored Track
+            const trackGeo = new THREE.BoxGeometry(10, 0.5, settings.trackLength);
+            const trackMat = new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.8 });
+            track = new THREE.Mesh(trackGeo, trackMat);
+            track.position.set(0, -0.25, -settings.trackLength / 2);
+            track.receiveShadow = true;
+            scene.add(track);
+
+            // 2. Player Cube
+            const playerGeo = new THREE.BoxGeometry(1, 1, 1);
+            const playerMat = new THREE.MeshStandardMaterial({ color: 0x00adb5, emissive: 0x00adb5, emissiveIntensity: 0.2 });
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.position.set(0, 0.5, 0);
+            player.castShadow = true;
+            scene.add(player);
+
+            // 3. Restored Finish Line
+            const finishGeo = new THREE.BoxGeometry(10, 0.1, 2);
+            const finishMat = new THREE.MeshStandardMaterial({ color: 0x393e46, emissive: 0x4e9f3d });
+            finishLine = new THREE.Mesh(finishGeo, finishMat);
+            finishLine.position.set(0, 0.05, -settings.trackLength);
+            scene.add(finishLine);
+
+            // 4. Obstacles
+            for (let i = 0; i < settings.obstacleCount; i++) {
+                const obsWidth = Math.random() > 0.6 ? 3 : 1.5;
+                const obsGeo = new THREE.BoxGeometry(obsWidth, 1.5, 1);
+                const obsMat = new THREE.MeshStandardMaterial({ color: 0xff2e63, roughness: 0.5 });
+                const obs = new THREE.Mesh(obsGeo, obsMat);
+                
+                const minZ = 30;
+                const maxZ = settings.trackLength - 15;
+                const zPos = -(Math.random() * (maxZ - minZ) + minZ);
+                const xPos = (Math.random() * 8) - 4; 
+                
+                obs.position.set(xPos, 0.75, zPos);
+                obs.castShadow = true;
+                scene.add(obs);
+                obstacles.push(obs);
+            }
+
+            updateCameraPosition();
+        }
+
+        // --- Game Flow Functions ---
+        function startGame() {
+            document.getElementById('start-screen').classList.add('hidden');
+            gameState = 'PLAYING';
+        }
+
+        function nextLevel() {
+            document.getElementById('complete-screen').classList.add('hidden');
+            currentLevel++;
+            setupLevel(currentLevel);
+            gameState = 'PLAYING';
+        }
+
+        function restartLevel() {
+            document.getElementById('gameover-screen').classList.add('hidden');
+            setupLevel(currentLevel);
+            gameState = 'PLAYING';
+        }
+
+        function triggerGameOver() {
+            gameState = 'GAMEOVER';
+            document.getElementById('gameover-screen').classList.remove('hidden');
+        }
+
+        // Restored Victory Logic
+        function triggerLevelComplete() {
+            gameState = 'LEVEL_COMPLETE';
+            const screen = document.getElementById('complete-screen');
+            const title = document.getElementById('complete-title');
+            const desc = document.getElementById('complete-desc');
+            const button = document.getElementById('next-btn');
+
+            if (currentLevel < maxLevels) {
+                title.innerText = `Level ${currentLevel} Cleared!`;
+                desc.innerText = "Prepare for higher speeds and more hazards.";
+                button.innerText = "Next Level";
+                button.onclick = nextLevel;
+            } else {
+                title.innerText = "Victory!";
+                desc.innerText = "Congratulations! You conquered all levels.";
+                button.innerText = "Play Again";
+                button.onclick = () => {
+                    screen.classList.add('hidden');
+                    currentLevel = 1;
+                    setupLevel(currentLevel);
+                    gameState = 'PLAYING';
+                };
+            }
+            screen.classList.remove('hidden');
+        }
+
+        // --- Input Handling ---
+        function handleInput(event, isKeyDown) {
+            if (event.key === 'ArrowLeft' || event.key === 'a' || event.key === 'A') {
+                keys.Left = isKeyDown;
+            }
+            if (event.key === 'ArrowRight' || event.key === 'd' || event.key === 'D') {
+                keys.Right = isKeyDown;
+            }
+            
+            // Jump Trigger
+            if (isKeyDown && (event.code === 'Space' || event.key === 'ArrowUp') && !isJumping) {
+                velocityY = jumpStrength;
+                isJumping = true;
+            }
+        }
+
+        function updateCameraPosition() {
+            camera.position.set(player.position.x, player.position.y + 3, player.position.z + 7);
+            camera.lookAt(player.position.x, player.position.y + 1, player.position.z - 5);
+        }
+
+        // --- Core Loop & Physics ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (gameState === 'PLAYING') {
+                const settings = levelSettings[currentLevel];
+
+                // 1. Move forward
+                player.position.z -= settings.speed;
+
+                // 2. Horizontal steering
+                const steerSpeed = 0.15;
+                if (keys.Left && player.position.x > -4.5) {
+                    player.position.x -= steerSpeed;
+                }
+                if (keys.Right && player.position.x < 4.5) {
+                    player.position.x += steerSpeed;
+                }
+
+                // 3. Jump Physics
+                velocityY -= gravity;
+                player.position.y += velocityY;
+                
+                // Floor collision
+                if (player.position.y <= 0.5) { 
+                    player.position.y = 0.5; 
+                    velocityY = 0; 
+                    isJumping = false; 
+                }
+
+                // 4. Sync Camera
+                updateCameraPosition();
+
+                // 5. Collision Detection
+                const playerBox = new THREE.Box3().setFromObject(player);
+                for (let obs of obstacles) {
+                    const obsBox = new THREE.Box3().setFromObject(obs);
+                    if (playerBox.intersectsBox(obsBox)) {
+                        triggerGameOver();
+                        break;
+                    }
+                }
+
+                // 6. Win condition
+                if (player.position.z <= -settings.trackLength) {
+                    triggerLevelComplete();
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Start Runtime ---
+        initThree();
+        setupLevel(currentLevel);
+        animate();
+
+    </script>
+</body>
+</html>
